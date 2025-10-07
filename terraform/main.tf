@@ -25,4 +25,11 @@ resource "aws_lambda_function" "demo_lambda" {
   handler          = var.lambda_handler
   runtime          = var.lambda_runtime
   source_code_hash = filebase64sha256(var.lambda_zip)
+  publish       = true 
+}
+
+resource "aws_lambda_alias" "prod" {
+  name             = "prod"
+  function_name    = aws_lambda_function.demo_lambda.function_name
+  function_version = aws_lambda_function.demo_lambda.version
 }

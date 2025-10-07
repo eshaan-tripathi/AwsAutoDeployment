@@ -110,6 +110,16 @@ jobs:
           else
             echo "🆕 Lambda '$FUNCTION_NAME' does not exist — will be created by Terraform."
           fi
+      
+      - name: Capture current Lambda alias version
+        id: capture_version
+        run: |
+          CURRENT_VERSION=$(aws lambda get-alias --function-name demo_service --name prod --query 'FunctionVersion' --output text)
+          echo "CURRENT_VERSION=$CURRENT_VERSION" >> $GITHUB_ENV
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-1
 
       - name: Terraform Apply (Lambda Only)
         id: apply
@@ -129,12 +139,19 @@ jobs:
             -var="lambda_role=${{ secrets.LAMBDA_ROLE_ARN }}" \
             -input=false
 
-      - name: Rollback if Terraform Apply fails
+      - name: Rollback Lambda alias if apply fails
         if: failure()
         run: |
-          echo "Terraform failed! Rolling back..."
-          cd terraform
-          terraform rollback || echo "No previous version found. Keeping current state."
+          echo "Terraform apply failed. Rolling back Lambda alias..."
+          aws lambda update-alias \
+            --function-name demo_service \
+            --name prod \
+            --function-version $CURRENT_VERSION
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-1
+
 
       - name: SNS Notification with Logs
         if: always()
