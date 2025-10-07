@@ -3,7 +3,7 @@ export async function handler(event) {
 
   // Example logic
   return {
-    success: false,
+    success: true,
     message: "Lambda executed successfully!",
     input: event,
   };
