@@ -83,6 +83,21 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: us-east-1
         run: terraform init -reconfigure
+      
+      - name: Import existing Lambda (if needed)
+        working-directory: terraform
+        run: |
+          if aws lambda get-function --function-name demo_service >/dev/null 2>&1; then
+            echo "🟢 Lambda exists — importing into Terraform state..."
+            terraform import aws_lambda_function.demo_lambda demo_service || true
+          else
+            echo "🆕 Lambda does not exist — will be created."
+          fi
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-1
+
 
       - name: Terraform Apply (Lambda Only)
         id: apply
