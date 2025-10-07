@@ -26,6 +26,14 @@ jobs:
           cd lambda
           npm install
 
+      - name: Lambda Syntax Check
+        id: syntax_check
+        continue-on-error: false
+        run: |
+          cd lambda
+          npm install eslint --no-save
+          npx eslint . --ext .js
+
       # 4️⃣ Run Lambda Tests
       - name: Run Lambda Tests
         id: run_tests
