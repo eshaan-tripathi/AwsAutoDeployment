@@ -32,7 +32,6 @@ jobs:
         id: detect
         run: |
           echo "services=[]" >> $GITHUB_ENV
-
           if git rev-parse HEAD~1 >/dev/null 2>&1; then
             changed_files=$(git diff --name-only HEAD~1 HEAD)
           else
@@ -95,11 +94,8 @@ jobs:
 
           if aws lambda get-function --function-name "$FUNCTION_NAME" >/dev/null 2>&1; then
             echo "🟢 Lambda '$FUNCTION_NAME' exists — importing into Terraform state..."
-
-            # Prevent interactive prompts
             terraform init -reconfigure -input=false
 
-            # Import only if not already in state
             if terraform state list | grep -q "aws_lambda_function.demo_lambda"; then
               echo "🔹 Already imported into Terraform state."
             else
@@ -134,8 +130,30 @@ jobs:
             -input=false
 
       - name: Rollback if Terraform Apply fails
-        if: steps.apply.outcome == 'failure'
+        if: failure()
         run: |
           echo "Terraform failed! Rolling back..."
           cd terraform
           terraform rollback || echo "No previous version found. Keeping current state."
+
+      - name: SNS Notification with Logs
+        if: always()
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-1
+          SNS_TOPIC_ARN: arn:aws:sns:us-east-1:612572392212:LambdaDeployNotifications-e
+        run: |
+          # Capture last 100 lines of workflow log for debugging
+          LOGS=$(tail -n 100 $GITHUB_WORKSPACE/_temp/_runner_file_commands/set_env_* 2>/dev/null || echo "No logs available")
+          
+          if [ "${{ job.status }}" == "success" ]; then
+            MESSAGE="✅ Lambda deployment pipeline succeeded! Branch: ${{ github.ref }}, Commit: ${{ github.sha }}"
+          else
+            MESSAGE="❌ Lambda deployment pipeline failed! Branch: ${{ github.ref }}, Commit: ${{ github.sha }}\n\nLast 100 lines of logs:\n$LOGS"
+          fi
+
+          aws sns publish \
+            --topic-arn "$SNS_TOPIC_ARN" \
+            --message "$MESSAGE" \
+            --region $AWS_DEFAULT_REGION
