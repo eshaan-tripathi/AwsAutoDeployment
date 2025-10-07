@@ -1,0 +1,109 @@
+name: Deploy AWS Lambda
+
+on:
+  push:
+    branches: ["main"]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 18
+
+      - name: Install Dependencies (if Lambda exists)
+        if: hashFiles('lambda/package.json') != ''
+        run: |
+          cd lambda
+          npm install
+
+      - name: Run Lambda Tests
+        if: hashFiles('lambda/tests/**') != ''
+        run: |
+          node lambda/tests/test_lambda.js
+
+      - name: Detect Changed Services
+        id: detect
+        run: |
+          echo "services=[]" >> $GITHUB_ENV
+
+          if git rev-parse HEAD~1 >/dev/null 2>&1; then
+            changed_files=$(git diff --name-only HEAD~1 HEAD)
+          else
+            echo "No previous commit found (first push). Considering all services."
+            changed_files=$(find lambda -type f)
+          fi
+
+          services=()
+
+          if echo "$changed_files" | grep -q "lambda/"; then
+            services+=("lambda")
+          fi
+
+          echo "services=${services[*]}" >> $GITHUB_ENV
+          echo "Detected services: ${services[*]}"
+
+      - name: Zip Lambda code
+        if: contains(env.services, 'lambda')
+        run: |
+          cd lambda
+          zip -r ../lambda_deploy.zip . -x "tests/*" "node_modules/*"
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.0
+      
+      - name: Ensure Terraform Backend S3 Bucket Exists
+        run: |
+          if ! aws s3 ls "s3://esh-terra" 2>&1 | grep -q 'NoSuchBucket'; then
+            echo "✅ Backend bucket already exists"
+          else
+            echo "🪣 Creating Terraform state bucket..."
+            aws s3api create-bucket \
+              --bucket esh-terra \
+              --region us-east-1 \
+              --create-bucket-configuration LocationConstraint=us-east-1
+          fi
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-1
+
+      - name: Terraform Init
+        working-directory: terraform
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-1
+        run: terraform init -reconfigure
+
+      - name: Terraform Apply (Lambda Only)
+        id: apply
+        working-directory: terraform
+        continue-on-error: true
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-1
+        run: |
+          set -e
+          terraform apply -auto-approve \
+            -var="region=us-east-1" \
+            -var="lambda_zip=../lambda_deploy.zip" \
+            -var="lambda_handler=index.handler" \
+            -var="lambda_runtime=nodejs18.x" \
+            -var="lambda_role=${{ secrets.LAMBDA_ROLE_ARN }}"
+
+      - name: Rollback if Terraform Apply fails
+        if: steps.apply.outcome == 'failure'
+        run: |
+          echo "Terraform failed! Rolling back..."
+          cd terraform
+          terraform rollback || echo "No previous version found. Keeping current state."
