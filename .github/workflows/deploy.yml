@@ -1,39 +1,42 @@
 name: Deploy AWS Lambda
- 
+
 on:
   push:
     branches: ["main"]
- 
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
- 
+
     steps:
       # 1️⃣ Checkout the code
       - name: Checkout code
+        id: checkout
         uses: actions/checkout@v3
- 
+
       # 2️⃣ Setup Node.js
       - name: Setup Node.js
+        id: setup_node
         uses: actions/setup-node@v3
         with:
           node-version: 18
- 
+
       # 3️⃣ Install Dependencies if Lambda exists
       - name: Install Dependencies
-        id: install
+        id: install_dependencies
         if: hashFiles('lambda/package.json') != ''
         run: |
           cd lambda
           npm install
- 
+
+      # 4️⃣ Lambda Syntax Check
       - name: Lambda Syntax Check
         id: syntax_check
         run: |
           cd lambda
           npx eslint . --ext .js
- 
-      # 4️⃣ Run Lambda Tests
+
+      # 5️⃣ Run Lambda Tests
       - name: Run Lambda Tests
         id: run_tests
         if: hashFiles('lambda/tests/**') != ''
@@ -41,8 +44,8 @@ jobs:
         run: |
           set -e
           node lambda/tests/test_lambda.js
- 
-      # 5️⃣ Detect Changed Services
+
+      # 6️⃣ Detect Changed Services
       - name: Detect Changed Services
         id: detect
         run: |
@@ -53,32 +56,33 @@ jobs:
             echo "No previous commit found (first push). Considering all services."
             changed_files=$(find lambda -type f)
           fi
- 
+
           services=()
           if echo "$changed_files" | grep -q "lambda/"; then
             services+=("lambda")
           fi
- 
+
           echo "services=${services[*]}" >> $GITHUB_ENV
           echo "Detected services: ${services[*]}"
- 
-      # 6️⃣ Zip Lambda code
+
+      # 7️⃣ Zip Lambda code
       - name: Zip Lambda code
         id: zip_lambda
         if: contains(env.services, 'lambda')
         run: |
           cd lambda
           zip -r ../lambda_deploy.zip . -x "tests/*" "node_modules/*"
- 
-      # 7️⃣ Setup Terraform
+
+      # 8️⃣ Setup Terraform
       - name: Setup Terraform
+        id: setup_terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.9.0
- 
-      # 8️⃣ Ensure Terraform Backend S3 Bucket Exists
+
+      # 9️⃣ Ensure Terraform Backend S3 Bucket Exists
       - name: Ensure Terraform Backend
-        id: tf_backend
+        id: ensure_backend
         run: |
           if aws s3 ls "s3://esh-terra" 2>&1 | grep -q 'NoSuchBucket'; then
             echo "🪣 Creating Terraform state bucket..."
@@ -93,8 +97,8 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: us-east-1
- 
-      # 9️⃣ Terraform Init
+
+      # 🔟 Terraform Init
       - name: Terraform Init
         id: tf_init
         working-directory: terraform
@@ -103,10 +107,10 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: us-east-1
         run: terraform init -reconfigure -input=false
- 
-      # 🔟 Import existing Lambda if it exists
+
+      # 1️⃣1️⃣ Import existing Lambda if it exists
       - name: Import existing Lambda
-        id: tf_import
+        id: import_lambda
         working-directory: terraform
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -132,14 +136,14 @@ jobs:
           else
             echo "🆕 Lambda '$FUNCTION_NAME' does not exist — will be created by Terraform."
           fi
- 
-      # 1️⃣1️⃣ Capture current Lambda alias version (for rollback)
+
+      # 1️⃣2️⃣ Capture current Lambda alias version (for rollback)
       - name: Capture current Lambda alias version
         id: capture_version
         run: |
           FUNCTION_NAME="demo_service"
           ALIAS_NAME="prod"
- 
+
           if aws lambda get-alias --function-name "$FUNCTION_NAME" --name "$ALIAS_NAME" >/dev/null 2>&1; then
             CURRENT_VERSION=$(aws lambda get-alias --function-name "$FUNCTION_NAME" --name "$ALIAS_NAME" --query 'FunctionVersion' --output text)
             echo "CURRENT_VERSION=$CURRENT_VERSION" >> $GITHUB_ENV
@@ -152,8 +156,8 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: us-east-1
- 
-      # 1️⃣2️⃣ Terraform Apply (Lambda Only)
+
+      # 1️⃣3️⃣ Terraform Apply (Lambda Only)
       - name: Terraform Apply (Lambda Only)
         id: apply
         working-directory: terraform
@@ -171,9 +175,10 @@ jobs:
             -var="lambda_runtime=nodejs18.x" \
             -var="lambda_role=${{ secrets.LAMBDA_ROLE_ARN }}" \
             -input=false
- 
-      # 1️⃣3️⃣ Rollback Lambda alias if apply fails
+
+      # 1️⃣4️⃣ Rollback Lambda alias if apply fails
       - name: Rollback Lambda alias if apply fails
+        id: rollback
         if: failure()
         run: |
           if [ -n "$CURRENT_VERSION" ]; then
@@ -190,26 +195,22 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: us-east-1
 
-      # ⚠️ Build failure summary if any step fails
+      # 1️⃣5️⃣ Build failure summary (to detect where it failed)
       - name: Build failure summary
         id: build_summary
         if: failure()
         run: |
           FAILURE_MESSAGE="❌ Lambda deployment pipeline failed at unknown step."
 
-          if [ "${{ steps.install.outcome }}" == "failure" ]; then
-            FAILURE_MESSAGE="❌ Failed during Install Dependencies."
-          elif [ "${{ steps.syntax_check.outcome }}" == "failure" ]; then
+          if [ "${{ steps.syntax_check.outcome }}" == "failure" ]; then
             FAILURE_MESSAGE="❌ Failed during Lambda Syntax Check."
           elif [ "${{ steps.run_tests.outcome }}" == "failure" ]; then
             FAILURE_MESSAGE="❌ Failed during Lambda Tests."
           elif [ "${{ steps.zip_lambda.outcome }}" == "failure" ]; then
-            FAILURE_MESSAGE="❌ Failed during Zip Lambda Code."
-          elif [ "${{ steps.tf_backend.outcome }}" == "failure" ]; then
-            FAILURE_MESSAGE="❌ Failed during Terraform Backend step."
+            FAILURE_MESSAGE="❌ Failed during Zipping Lambda Code."
           elif [ "${{ steps.tf_init.outcome }}" == "failure" ]; then
             FAILURE_MESSAGE="❌ Failed during Terraform Init."
-          elif [ "${{ steps.tf_import.outcome }}" == "failure" ]; then
+          elif [ "${{ steps.import_lambda.outcome }}" == "failure" ]; then
             FAILURE_MESSAGE="❌ Failed during Terraform Import."
           elif [ "${{ steps.apply.outcome }}" == "failure" ]; then
             FAILURE_MESSAGE="❌ Failed during Terraform Apply."
@@ -217,7 +218,7 @@ jobs:
 
           echo "FAILURE_MESSAGE=$FAILURE_MESSAGE" >> $GITHUB_ENV
 
-      # 1️⃣4️⃣ SNS Notification with Logs
+      # 1️⃣6️⃣ SNS Notification with Logs
       - name: SNS Notification with Logs
         if: always()
         env:
